@@ -572,18 +572,46 @@ annotate = function(binsets, concatemers, covariates = NULL, k = 5, interchromos
   sub.binsets = gr2dt(binsets)[, powerset(binid, 1, k), by = bid] %>% setnames(c('bid', 'setid', 'binid')) %>% setkey(bid)
   sub.binsets[, ":="(iid = 1:.N, tot = .N), by = .(setid, bid)] ## label each item in each sub-binset, and total count will be useful below
 
+  ##browser()
   if (verbose) smessage('Made ', nrow(sub.binsets), ' sub-binsets')
 
   ## first use ov to count how many concatemers fully overlap all the bins in the subbinset
   if (verbose) smessage('Counting concatemers across sub-binsets across ', mc.cores, ' cores')
   ref.counts = unique(sub.binsets[, .(bid, setid)])[, count := 0]
+
+   ## if (nrow(ov))
+   ##   {
+   ##     ubid = unique(sub.binsets$bid) ## split up to lists to leverage pbmclapply
+   ##     ubidl = split(ubid, ceiling(runif(length(ubid))*numchunks)) ## randomly chop up ubid into twice the number of mc.coreso
+   ##     counts = pbmclapply(ubidl, mc.cores = mc.cores, function(bids)
+   ##     {
+   ##         out = tryCatch(merge(sub.binsets[.(as.factor(bids)), ], ov[bid %in% bids], by = c('binid', 'bid'), allow.cartesian = TRUE), error = function(e) NULL)
+   ##       if (!is.null(out) & nrow(out) > 0){
+   ##           if (unique.per.setid){
+   ##               out = out[, .(binid, bid, setid, iid, tot, cid)]
+   ##               this.step1 = out[, .(hit = all(1:tot[1] %in% iid)), by = .(cid, setid, bid, tot)][hit == TRUE]
+   ##               setkeyv(this.step1, c("bid", "cid", "tot"))
+   ##               this.step1 = this.step1[, tail(.SD, 1), by = .(cid, bid)]
+   ##               this.counts = this.step1[, .(count = sum(hit, na.rm = TRUE)), by = .(setid, bid)]
+   ##               this.counts = merge(ref.counts[bid %in% bids], this.counts, by = c("bid", "setid"), all.x = T)
+   ##               this.counts[, count := sum(count.x, count.y, na.rm = T), by = .(bid, setid)][, .(bid, setid, count)]
+   ##           } else {
+   ##               out[, .(hit = all(1:tot[1] %in% iid)), by = .(cid, setid, bid)][, .(count = sum(hit, na.rm = TRUE)), by = .(setid, bid)]
+   ##           }
+   ##       } else {
+   ##           NULL
+   ##       }
+   ##     })  %>% rbindlist
+   ##   }
+
+  ##more efficient, split up by concatemer 
   if (nrow(ov))
     {
-      ubid = unique(sub.binsets$bid) ## split up to lists to leverage pbmclapply
-      ubidl = split(ubid, ceiling(runif(length(ubid))*numchunks)) ## randomly chop up ubid into twice the number of mc.coreso
-      counts = pbmclapply(ubidl, mc.cores = mc.cores, function(bids)
+      ucid = unique(ov$cid) ## split up to lists to leverage pbmclapply
+      ucidl = split(ucid, ceiling(runif(length(ucid))*numchunks)) ## randomly chop up ubid into twice the number of mc.coreso
+      counts.alt = pbmclapply(ucidl, mc.cores = mc.cores, function(cids)
       {
-          out = tryCatch(merge(sub.binsets[.(as.factor(bids)), ], ov[bid %in% bids], by = c('binid', 'bid'), allow.cartesian = TRUE), error = function(e) NULL)
+          out = tryCatch(merge(sub.binsets, ov[cid %in% cids], by = c('binid', 'bid'), allow.cartesian = TRUE), error = function(e) NULL)
         if (!is.null(out) & nrow(out) > 0){
             if (unique.per.setid){
                 out = out[, .(binid, bid, setid, iid, tot, cid)]
@@ -591,8 +619,9 @@ annotate = function(binsets, concatemers, covariates = NULL, k = 5, interchromos
                 setkeyv(this.step1, c("bid", "cid", "tot"))
                 this.step1 = this.step1[, tail(.SD, 1), by = .(cid, bid)]
                 this.counts = this.step1[, .(count = sum(hit, na.rm = TRUE)), by = .(setid, bid)]
-                this.counts = merge(ref.counts[bid %in% bids], this.counts, by = c("bid", "setid"), all.x = T)
-                this.counts[, count := sum(count.x, count.y, na.rm = T), by = .(bid, setid)][, .(bid, setid, count)]
+                this.counts = merge(ref.counts, this.counts, by = c("bid", "setid"), all.x = T)
+                this.counts[, count := sum(count.x, count.y, na.rm = T), by = .(bid, setid)]
+                this.counts[count > 0, .(bid, setid, count)]
             } else {
                 out[, .(hit = all(1:tot[1] %in% iid)), by = .(cid, setid, bid)][, .(count = sum(hit, na.rm = TRUE)), by = .(setid, bid)]
             }
@@ -601,6 +630,12 @@ annotate = function(binsets, concatemers, covariates = NULL, k = 5, interchromos
         }
       })  %>% rbindlist
     }
+  counts.output = counts.alt[, .(count=sum(count)), by=c('bid','setid')]
+  counts.output = merge(counts.output, ref.counts[, .(bid,setid)], by = c("bid", "setid"), all.y = T)
+  counts = counts.output[is.na(count), count:=0]
+
+
+
   
   ## other goodies
   ## changing to mean instead of median
@@ -685,7 +720,7 @@ annotate = function(binsets, concatemers, covariates = NULL, k = 5, interchromos
       annotated.binsets = merge(annotated.binsets, covdata, all.x = TRUE, by = c('bid', 'setid'))
     }
   }
-  return(annotated.binsets) 
+  return(list(annotated.binsets, sub.binsets, binsets)) 
 }
 
 
@@ -1140,34 +1175,37 @@ concatemer_communities = function (concatemers, k.knn = 25, k.min = 5,
 
 
   ## all pairs of concatemers that share a bin
-  reads2[, cidi := as.integer(cid)]
+  ## reads2[, cidi := as.integer(cid)]
 
-  if (verbose) cmessage("Making Pairs object") 
-  pairs = reads2[, t(combn(cidi, 2)) %>% as.data.table, by = binid]
-  if (verbose) cmessage("Pairs object made") 
+  ## if (verbose) cmessage("Making Pairs object") 
+  ## pairs = reads2[, t(combn(cidi, 2)) %>% as.data.table, by = binid]
+  ## if (verbose) cmessage("Pairs object made") 
 
-  setkey(reads2, cid)
-  concatm = reads2[.(ucid),  sparseMatrix(factor(cid, ucid) %>% as.integer, binid %>% as.integer, x = 1, dimnames = list(ucid, levels(binid)))]
+  ## setkey(reads2, cid)
+  ## concatm = reads2[.(ucid),  sparseMatrix(factor(cid, ucid) %>% as.integer, binid %>% as.integer, x = 1, dimnames = list(ucid, levels(binid)))]
 
-  p1 = concatm[pairs[, V1], -1, drop = FALSE]
-  p2 = concatm[pairs[, V2], -1, drop = FALSE]
-  matching = Matrix::rowSums(p1 & p2)
-  total = Matrix::rowSums(p1 | p2)
-  dt = data.table(bx1 = pairs[, V1], bx2 = pairs[, V2], mat = matching, 
-                  tot = total)[, `:=`(frac, mat/tot)]
-  dt2 = copy(dt)
-  dt2$bx2 = dt$bx1
-  dt2$bx1 = dt$bx2
-  dt3 = rbind(dt, dt2)
-  dt3$nmat = dt3$mat
-  dt3$nfrac = dt3$frac
-  setkeyv(dt3, c("nfrac", "nmat"))
-  dt3 = unique(dt3)
-  dt3.2 = dt3[order(nfrac, nmat, decreasing = T)]
-  if (verbose) cmessage("Pairs made")
-  gc()
-  k = k.knn
-  knn.dt = dt3.2[mat > 2 & tot > 2, .(knn = bx2[1:k]), by = bx1][!is.na(knn), ]
+  ## p1 = concatm[pairs[, V1], -1, drop = FALSE]
+  ## p2 = concatm[pairs[, V2], -1, drop = FALSE]
+  ## matching = Matrix::rowSums(p1 & p2)
+  ## total = Matrix::rowSums(p1 | p2)
+  ## dt = data.table(bx1 = pairs[, V1], bx2 = pairs[, V2], mat = matching, 
+  ##                 tot = total)[, `:=`(frac, mat/tot)]
+  ## dt2 = copy(dt)
+  ## dt2$bx2 = dt$bx1
+  ## dt2$bx1 = dt$bx2
+  ## dt3 = rbind(dt, dt2)
+  ## dt3$nmat = dt3$mat
+  ## dt3$nfrac = dt3$frac
+  ## setkeyv(dt3, c("nfrac", "nmat"))
+  ## dt3 = unique(dt3)
+  ## dt3.2 = dt3[order(nfrac, nmat, decreasing = T)]
+  ## if (verbose) cmessage("Pairs made")
+  ## gc()
+  ## k = k.knn
+
+
+
+  ##knn.dt = dt3.2[mat > 2 & tot > 2, .(knn = bx2[1:k]), by = bx1][!is.na(knn), ]
   if (!nrow(knn.dt))
   {
     warning('no concatemers with neighbors, perhaps data too sparse? returning empty result')
@@ -1187,20 +1225,20 @@ concatemer_communities = function (concatemers, k.knn = 25, k.min = 5,
 
   cidis = as.integer(colnames(A))
   
-  seqcount = reads2[, .N, by=c('cidi', 'seqnames')]
-  seqcount[, is_multichromosomal := length(seqnames) > 1, by = cidi]
-  seqcount = unique(seqcount[order(N, decreasing=T)], by='cidi')
-  seqcount = seqcount[cidi %in% as.integer(igraph::V(G)$name),]
-  setkey(seqcount, 'cidi')
+  ## seqcount = reads2[, .N, by=c('cidi', 'seqnames')]
+  ## seqcount[, is_multichromosomal := length(seqnames) > 1, by = cidi]
+  ## seqcount = unique(seqcount[order(N, decreasing=T)], by='cidi')
+  ## seqcount = seqcount[cidi %in% as.integer(igraph::V(G)$name),]
+  ## setkey(seqcount, 'cidi')
   
-  G = igraph::set_vertex_attr(G, 'seqnames', value=as.character(seqcount[cidis]$seqnames))
-  G = igraph::set_vertex_attr(G, 'is_multichromosomal', value=as.integer(seqcount[cidis]$is_multichromosomal))
+  ## G = igraph::set_vertex_attr(G, 'seqnames', value=as.character(seqcount[cidis]$seqnames))
+  ## G = igraph::set_vertex_attr(G, 'is_multichromosomal', value=as.integer(seqcount[cidis]$is_multichromosomal))
   
-  cl.l = cluster_fast_greedy(G)
+  ## cl.l = cluster_fast_greedy(G)
   #cl.l = cluster_leiden(G, objective_function='modularity')
   
   
-  #cl.l = cluster_fast_greedy(G)
+  cl.l = cluster_fast_greedy(G)
   cl = cl.l$membership
   ## rename so chid has most support
   cls = 1:max(cl)
@@ -1287,7 +1325,8 @@ sliding_window_chromunity = function(concatemers, resolution = 5e4, region = si2
       if (verbose) cmessage('Taking sub-sample with fraction ', subsample.frac)
   }
 
-    chrom.comm = mclapply(1:length(windows), mc.cores = mc.cores, function(j){
+    ##browser()
+    chrom.comm = pbmclapply(1:length(windows), mc.cores = mc.cores, function(j){
         suppressWarnings({
             which.gr = windows[j]
             these.cids = (concatemers %&% which.gr)$cid
@@ -1299,7 +1338,7 @@ sliding_window_chromunity = function(concatemers, resolution = 5e4, region = si2
                                                                                tiles = this.bins,
                                                                                take_sub_sample = take_sub_sample,
                                                                                frac = subsample.frac,
-                                                                               verbose = FALSE)), error = function(e) NULL)  
+                                                                               verbose = FALSE)), error = function(e) NULL)
             if (!is.null(this.chromunity.out)){
                 this.chromunity.out[, winid := j]
             } else {
