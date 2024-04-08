@@ -1140,34 +1140,37 @@ concatemer_communities = function (concatemers, k.knn = 25, k.min = 5,
 
 
   ## all pairs of concatemers that share a bin
-  reads2[, cidi := as.integer(cid)]
+  ## reads2[, cidi := as.integer(cid)]
 
-  if (verbose) cmessage("Making Pairs object") 
-  pairs = reads2[, t(combn(cidi, 2)) %>% as.data.table, by = binid]
-  if (verbose) cmessage("Pairs object made") 
+  ## if (verbose) cmessage("Making Pairs object") 
+  ## pairs = reads2[, t(combn(cidi, 2)) %>% as.data.table, by = binid]
+  ## if (verbose) cmessage("Pairs object made") 
 
-  setkey(reads2, cid)
-  concatm = reads2[.(ucid),  sparseMatrix(factor(cid, ucid) %>% as.integer, binid %>% as.integer, x = 1, dimnames = list(ucid, levels(binid)))]
+  ## setkey(reads2, cid)
+  ## concatm = reads2[.(ucid),  sparseMatrix(factor(cid, ucid) %>% as.integer, binid %>% as.integer, x = 1, dimnames = list(ucid, levels(binid)))]
 
-  p1 = concatm[pairs[, V1], -1, drop = FALSE]
-  p2 = concatm[pairs[, V2], -1, drop = FALSE]
-  matching = Matrix::rowSums(p1 & p2)
-  total = Matrix::rowSums(p1 | p2)
-  dt = data.table(bx1 = pairs[, V1], bx2 = pairs[, V2], mat = matching, 
-                  tot = total)[, `:=`(frac, mat/tot)]
-  dt2 = copy(dt)
-  dt2$bx2 = dt$bx1
-  dt2$bx1 = dt$bx2
-  dt3 = rbind(dt, dt2)
-  dt3$nmat = dt3$mat
-  dt3$nfrac = dt3$frac
-  setkeyv(dt3, c("nfrac", "nmat"))
-  dt3 = unique(dt3)
-  dt3.2 = dt3[order(nfrac, nmat, decreasing = T)]
-  if (verbose) cmessage("Pairs made")
-  gc()
-  k = k.knn
-  knn.dt = dt3.2[mat > 2 & tot > 2, .(knn = bx2[1:k]), by = bx1][!is.na(knn), ]
+  ## p1 = concatm[pairs[, V1], -1, drop = FALSE]
+  ## p2 = concatm[pairs[, V2], -1, drop = FALSE]
+  ## matching = Matrix::rowSums(p1 & p2)
+  ## total = Matrix::rowSums(p1 | p2)
+  ## dt = data.table(bx1 = pairs[, V1], bx2 = pairs[, V2], mat = matching, 
+  ##                 tot = total)[, `:=`(frac, mat/tot)]
+  ## dt2 = copy(dt)
+  ## dt2$bx2 = dt$bx1
+  ## dt2$bx1 = dt$bx2
+  ## dt3 = rbind(dt, dt2)
+  ## dt3$nmat = dt3$mat
+  ## dt3$nfrac = dt3$frac
+  ## setkeyv(dt3, c("nfrac", "nmat"))
+  ## dt3 = unique(dt3)
+  ## dt3.2 = dt3[order(nfrac, nmat, decreasing = T)]
+  ## if (verbose) cmessage("Pairs made")
+  ## gc()
+  ## k = k.knn
+  ## knn.dt = dt3.2[mat > 2 & tot > 2, .(knn = bx2[1:k]), by = bx1][!is.na(knn), ]
+
+
+
   if (!nrow(knn.dt))
   {
     warning('no concatemers with neighbors, perhaps data too sparse? returning empty result')
@@ -1185,16 +1188,16 @@ concatemer_communities = function (concatemers, k.knn = 25, k.min = 5,
   G = graph.adjacency(A, weighted = TRUE, mode = "undirected")
 
 
-  cidis = as.integer(colnames(A))
+  ## cidis = as.integer(colnames(A))
   
-  seqcount = reads2[, .N, by=c('cidi', 'seqnames')]
-  seqcount[, is_multichromosomal := length(seqnames) > 1, by = cidi]
-  seqcount = unique(seqcount[order(N, decreasing=T)], by='cidi')
-  seqcount = seqcount[cidi %in% as.integer(igraph::V(G)$name),]
-  setkey(seqcount, 'cidi')
+  ## seqcount = reads2[, .N, by=c('cidi', 'seqnames')]
+  ## seqcount[, is_multichromosomal := length(seqnames) > 1, by = cidi]
+  ## seqcount = unique(seqcount[order(N, decreasing=T)], by='cidi')
+  ## seqcount = seqcount[cidi %in% as.integer(igraph::V(G)$name),]
+  ## setkey(seqcount, 'cidi')
   
-  G = igraph::set_vertex_attr(G, 'seqnames', value=as.character(seqcount[cidis]$seqnames))
-  G = igraph::set_vertex_attr(G, 'is_multichromosomal', value=as.integer(seqcount[cidis]$is_multichromosomal))
+  ## G = igraph::set_vertex_attr(G, 'seqnames', value=as.character(seqcount[cidis]$seqnames))
+  ## G = igraph::set_vertex_attr(G, 'is_multichromosomal', value=as.integer(seqcount[cidis]$is_multichromosomal))
   
   cl.l = cluster_fast_greedy(G)
   #cl.l = cluster_leiden(G, objective_function='modularity')
