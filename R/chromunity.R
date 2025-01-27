@@ -9,7 +9,7 @@
 #' @importFrom Matrix sparseMatrix
 #' @importFrom plyr round_any
 #' @import zoo
-#' @import arrow
+#' 
 #' @importFrom pbmcapply pbmclapply 
 #' @importFrom parallel mclapply
 #' @importFrom stats median
@@ -46,7 +46,7 @@ parquet2gr = function(path = NULL, col_names = NULL, save_path = NULL, prefix = 
         stop("Need a valid path to all Pore-C parquets.")
     }
 
-    all.paths = data.table(file_path = dir(path, all.files = TRUE, recursive = TRUE, full = TRUE))[grepl("*.parquet*", file_path)]
+    all.paths = data.table(file_path = dir(path, all.files = TRUE, recursive = TRUE, full = TRUE))[grepl("*.parquet$", file_path)]
 
     if(nrow(all.paths) == 0){
         stop("No valid files files with suffix .parquet found.")
@@ -57,8 +57,10 @@ parquet2gr = function(path = NULL, col_names = NULL, save_path = NULL, prefix = 
     if(is.null(col_names)){col_names = c("read_name", "chrom", "start", "end", "pass_filter")}
     
     parq.list = pbmclapply(1:nrow(all.paths), function(k){
-        parq.al = read_parquet(all.paths[k]$file_path, col_select = col_names)
-        parq.al = as.data.table(parq.al)
+        parq.al = read_parquet(all.paths[k]$file_path)#,  col_select = col_names)
+        parq.al = as.data.table(parq.al)        
+        parq.al[, count := .N, by=cid]
+        parq.al[, order := 1:count[[1]], by=cid]
         return(parq.al)
     }, mc.cores = mc.cores)
 
@@ -250,6 +252,9 @@ re_background = function(binsets, n = length(binsets), pseudocount = 1, resoluti
   setkeyv(binsets, c('seqnames','start', 'end'))
 
   ####
+###IT ONLY SELECTS BINS WHICH ALREADY EXIST IN BINSETS
+###THIS IS WHY IT IS RE CHROMUNITY
+  
   ends.kernel = binsets[, .(val = max(end)), by = .(seqnames, bid)] %>% setkey('seqnames')
   ends.kernel[, freq := .N, by = seqnames]
   if (any(ends.kernel[, freq] == 1)){
@@ -295,7 +300,7 @@ re_background = function(binsets, n = length(binsets), pseudocount = 1, resoluti
   ## chrom.transition[, sum.p := sum(prob), by = seqnames.x]
   ## chrom.transition = chrom.transition[sum.p > 0]
   
-  
+  ##i=1
   if (verbose) smessage('Generating random sets')
   out = pbmclapply(1:n, mc.cores = mc.cores, function(i)
   {
@@ -487,6 +492,10 @@ annotate = function(binsets, concatemers, covariates = NULL, k = 5, interchromos
   if (verbose) smessage('Overlapping ', length(binsets), ' bins with ', length(concatemers), ' monomers')
 
   ov = binsets %*% concatemers[, 'cid'] %>% as.data.table
+  ### insert dedupe here
+  ov = unique(ov, by=c('cid','binid'))
+  
+####browser()
   ##
   if (verbose) smessage('Computing bin by bin pairwise distance')
   ## bin x bin pairwise distance within each set
@@ -1220,6 +1229,7 @@ concatemer_communities = function (concatemers, k.knn = 25, k.min = 5,
   A[cbind(1:nrow(A), 1:nrow(A))] = 0
 #  A <- as(A, "sparseMatrix")
   A = A + t(A)
+  A[1,1] = 0
   G = graph.adjacency(A, weighted = TRUE, mode = "undirected")
 
 
@@ -1325,7 +1335,11 @@ sliding_window_chromunity = function(concatemers, resolution = 5e4, region = si2
       if (verbose) cmessage('Taking sub-sample with fraction ', subsample.frac)
   }
 
-    ##browser()
+    
+
+    ##concatemers$cid = concatemers$read_idx
+    print('chromunity!')
+    
     chrom.comm = pbmclapply(1:length(windows), mc.cores = mc.cores, function(j){
         suppressWarnings({
             which.gr = windows[j]
@@ -1338,7 +1352,8 @@ sliding_window_chromunity = function(concatemers, resolution = 5e4, region = si2
                                                                                tiles = this.bins,
                                                                                take_sub_sample = take_sub_sample,
                                                                                frac = subsample.frac,
-                                                                               verbose = FALSE)), error = function(e) NULL)
+                                                                               verbose = FALSE, seed.n=seed)), error = function(e) NULL)
+
             if (!is.null(this.chromunity.out)){
                 this.chromunity.out[, winid := j]
             } else {
@@ -1445,17 +1460,80 @@ concatemer_chromunity_sliding <- function (concatemers, k.knn = 10, k.min = 1, t
         gt = mat2[rowSums(mat2[, -1]) > 1, ]
     }
     ubx = gt$cid
+
     if (verbose) cmessage("Matrices made")
     gc()
     pairs = t(do.call(cbind, apply(gt[, setdiff(which(colSums(gt) > 
         1), 1), with = FALSE] %>% as.matrix, 2, function(x) combn(which(x != 0), 2)))) 
+
+
+
+    ###new block to test maybe
+
+    ## unique_reads2_trim = unique(reads[cid %in% ubx], by=c('cid','binid'))
+    ## unique_reads2_trim$cidi = unique_reads2_trim$cid
+
+    ## ## unique_cidi = unique(unique_reads2_trim$cidi)
+    ## ## unique_binid = unique(unique_reads2_trim$binid)
+
+    
+    ## ## concats.per.bin = mean(unique_reads2_trim[, .N, by='binid']$N)
+    ## ## bins.per.concat = mean(unique_reads2_trim[, .N, by='cidi']$N)
+    ## ## total.pairs = length(unique_cidi) * bins.per.concat * concats.per.bin
+    ## ## numchunks = ceiling(total.pairs / 1e8)   ####~100 million pairs per chunk
+    ## ## if (numchunks < 10) numchunks = 10
+    
+    ## ## ucidl = split(unique_cidi, ceiling(runif(length(unique_cidi))*numchunks)) ## randomly chop up cids
+    ## ## setkey(unique_reads2_trim, 'cidi')
+
+
+    ##                                     # browser()
+    ## cmessage("Beginning line graph construction")
+    ## concatm = sparseMatrix(unique_reads2_trim$cidi %>% as.integer, unique_reads2_trim$binid %>% as.integer, x=1, repr='R')
+    ## ##edgelist = pbmclapply(ucidl, mc.cores=mc.cores, mc.preschedule=TRUE, function(cidis) {
+    ## dt = unique_reads2_trim[, .(cidi1 = cidi, binid = binid), by=cidi]
+    ## dt[, cidi := NULL]
+    ## dt.merged = merge(dt, unique_reads2_trim, by='binid', how='left', allow.cartesian = TRUE)[cidi1 < cidi]      
+    ## edgelist = dt.merged[, .N, by=c('cidi1','cidi')]
+    ## edgelist = edgelist[N > 2]
+    ## colnames(edgelist)[colnames(edgelist) == "cidi1"] = "bx1"
+    ## colnames(edgelist)[colnames(edgelist) == "cidi"] = "bx2"
+    ## colnames(edgelist)[colnames(edgelist) == "N"] = "mat"
+    ## p1 = concatm[edgelist[, bx1],]
+    ## p2 = concatm[edgelist[, bx2],]  
+    ## total = Matrix::rowSums(p1 | p2)
+    ## edgelist$tot = total
+    ## edgelist[, frac := mat/tot]
+    ## edgelist = edgelist[mat > 2 & tot > 2]
+    ##    ##})
+    ## cmessage("End line graph construction")
+    ## ##edgelist = rbindlist(edgelist)
+    
+    ## edgelist_2 = copy(edgelist)
+    ## edgelist_2$bx2 = edgelist$bx1
+    ## edgelist_2$bx1 = edgelist$bx2
+    ## edgelist_3 = rbind(edgelist, edgelist_2)
+    ## edgelist_3$nmat = edgelist_3$mat
+    ## edgelist_3$nfrac = edgelist_3$frac
+    ## setkeyv(edgelist_3, c("nfrac", "nmat"))
+    ## edgelist_3 = unique(edgelist_3)
+    ## edgelist_3 = edgelist_3[order(nfrac, nmat, -bx2, decreasing = T)]
+    ##                                     #concatm = t(incidence)
+    
+    ## k=k.knn
+    ## knn.dt = edgelist_3[mat > 2 & tot > 2, .(knn = bx2[1:k]), by = bx1][!is.na(knn), ]
+    
+
+
+    ###
     gt = as(as.matrix(as.data.frame(gt)), "sparseMatrix")    
     p1 = gt[pairs[, 1], -1]
     p2 = gt[pairs[, 2], -1]
+
     matching = rowSums(as.array(p1 & p2))
     total = rowSums(as.array(p1 | p2))    
     dt = data.table(bx1 = pairs[, 1], bx2 = pairs[, 2], mat = matching, 
-        tot = total)[, `:=`(frac, mat/tot)]
+         tot = total)[, `:=`(frac, mat/tot)]
     dt2 = copy(dt)
     dt2$bx2 = dt$bx1
     dt2$bx1 = dt$bx2
@@ -1469,7 +1547,8 @@ concatemer_chromunity_sliding <- function (concatemers, k.knn = 10, k.min = 1, t
     gc()
     k = k.knn
     knn.dt = dt3.2[mat > 2 & tot > 2, .(knn = bx2[1:k]), by = bx1][!is.na(knn), 
-        ]
+         ]
+
     setkey(knn.dt)
     knn = sparseMatrix(knn.dt$bx1, knn.dt$knn, x = 1)
     knn.shared = knn %*% knn
@@ -1507,7 +1586,7 @@ concatemer_chromunity_sliding <- function (concatemers, k.knn = 10, k.min = 1, t
 #' @return GRanges of simulated binsets
 #' @export
 
-sliding_window_background = function(chromosome, binsets, seed = 145, n = 1000, resolution = 5e4, num.cores = 10, genome.to.use = "BSgenome.Hsapiens.UCSC.hg38::Hsapiens"){
+sliding_window_background = function(chromosome, binsets, seed = 145, n = 1000, resolution = 5e4, num.cores = 10, genome.to.use = "BSgenome.Hsapiens.UCSC.hg38::Hsapiens", window = NULL){
     set.seed(seed)
     this.final.dt = data.table()
     chr.int = .chr2str(chromosome)
@@ -1518,10 +1597,10 @@ sliding_window_background = function(chromosome, binsets, seed = 145, n = 1000, 
     this.tot = 0
     i = 0
     message("Generating GRanges")
+
     this.list = pbmclapply(1:n, function(i){
         this.iter = i
-        this.card = round(rdens_sliding(1, den = density(dist.pdf.dt[type == "cardinality"]$V1),
-                                dat = dist.pdf.dt[type == "cardinality"]$V1))
+        this.card = round(rdens_sliding(1, den = density(dist.pdf.dt[type == "cardinality"]$V1), dat = dist.pdf.dt[type == "cardinality"]$V1))
         if (this.card > 0){
             this.dists = tryCatch(round_any(c(0, (rdens_sliding(this.card-1, den = density(dist.pdf.dt[type == "dist"]$V1), dat = dist.pdf.dt[type== "dist"]$V1))), resolution), error = function(e) NULL)
             this.width = tryCatch(round_any(rdens_sliding(this.card, den = density(dist.pdf.dt[type == "width"]$V1), dat = dist.pdf.dt[type == "width"]$V1), resolution),  error = function(e) NULL)
@@ -1532,13 +1611,18 @@ sliding_window_background = function(chromosome, binsets, seed = 145, n = 1000, 
                 this.loc.dt = data.table()
                 for (j in 1:this.card){
                     if (j == 1){
-                        anchor.pt = start(gr.sample(hg_seqlengths(genome = genome.to.use)[chr.int], 1, wid = 1))
+                        if(!is.null(window))
+                            anchor.pt = start(gr.sample(window, 1, wid = 1))
+                        else
+                            anchor.pt = start(gr.sample(hg_seqlengths(genome = genome.to.use)[chr.int], 1, wid = 1))
+
                         sts = anchor.pt + this.dists[j]
                         this.gr = GRanges(seqnames = Rle(c(chromosome), c(1)),
                                           ranges = IRanges(c(sts)))
                         this.gr = this.gr + (this.width[j]/2)
                         this.dt = gr2dt(this.gr)
                         this.loc.dt = rbind(this.loc.dt, this.dt)
+                        print(this.loc.dt)
                     } else {
                         sts = tail(this.loc.dt, n = 1)$end + this.dists[j]
                         ends = sts + this.width[j]
@@ -3039,6 +3123,344 @@ gr.peaks = function(gr, field = 'score',
   
   return(out)
 }
+
+
+
+
+
+#' @name re_background
+#' @description
+#' Given n binsets generates random "background" binsets that mirrors the input binset characteristics with respect to chromosome, width, and distance.
+#'
+#' Generates (chromosome specific) kernels for width, cardinality, distance and models interchromosomal binsets by allowing
+#' a chromosome transition matrix which then lands you on a coordinate that is also chosen from a kernel. 
+#' x
+#' @param binsets GRanges of bins with fields seqnames, start, end, and $bid specifying binset id
+#' @param resolution the resolution to use for distance simulation
+#' @param n integer scalar specifying number of sets to sample (default = nrow(binsets))
+#' @param pseudocount integer used to populate chr-chr transition matrix
+#' @param resolution integer resolution to use for simulating bin-sets
+#' @param gg gGnome object to be used for simulating bin-sets in the presence of structural variation
+#' @param interchromosomal.dist integer inferred average inter-chr distance to be used in case of whole genome simulation
+#' @param interchromosomal.table data.table optional table that contains specific chr-chr inferred distances.
+#' @param verbose boolean "verbose" flag (default = FALSE)
+#' @param mc.cores integer Number of cores in mclapply (default = 10)
+#' @author Aditya Deshpande, Marcin Imielinski
+#' @export
+sliding_background_interchr = function(binsets, bins, n = length(binsets), pseudocount = 1, resolution = 5e4, gg=NULL, interchromosomal.dist = 1e8, interchromosomal.table = NULL, verbose = TRUE, mc.cores = 5, seed=42, genome.to.use = "BSgenome.Hsapiens.UCSC.hg38::Hsapiens")
+{
+  set.seed(seed)
+  if (!length(binsets))
+    stop('empty binsets')
+
+  ## sort from left to right
+  ## binsets = gr2dt(binsets)
+  ## setkeyv(binsets, c('seqnames','start', 'end'))
+
+  if (verbose) smessage('Making kernels')
+
+  ## populate data for kernels
+####
+  ## Approach to put all dostances in one bag
+  binsets$binid = 1:length(binsets)
+  
+  if (is.null(gg))
+  {
+    distance.kernel = gr2dt(binsets)[, as.data.table(expand.grid(i = binid, j = binid))[i<j, ], by = bid] %>% setkeyv(c('i', 'j'))
+    distance.kernel[, val := GenomicRanges::distance(binsets[i], binsets[j])]
+    distance.kernel = distance.kernel[j-i==1]
+  } else {
+    if (verbose) smessage('Using graph distance')
+######
+    distance.kernel = gr2dt(binsets)[, as.data.table(expand.grid(i = binid, j = binid))[i<j, ], by = bid] %>% setkeyv(c('i', 'j'))
+    distance.kernel[, val := GenomicRanges::distance(binsets[i], binsets[j])]
+    distance.kernel.intra = distance.kernel[!is.na(val)]
+####
+    gg = gg$copy$disjoin(disjoin(binsets))
+    
+    binsetd = data.table(binid = binsets$binid, bid = binsets$bid) %>% setkey('binid')
+    binsetd[, gid := gr.match(binsets, gr.chr(gg$nodes$gr))] ## will streamline distance computation to get index
+    distance.kernel.g = pbmclapply(unique(binsetd$bid), function(this.bid){
+        this.dist = tryCatch(gg$dist(binsetd[bid == this.bid, gid]) %>% melt %>% as.data.table %>% setnames(., c('gi', 'gj', 'val')),
+                             error = function(e) NULL)
+        if(!is.null(this.dist)){
+            this.dist[, bid := as.factor(this.bid)]
+            return(this.dist)
+         }
+    }, mc.cores = mc.cores) %>% rbindlist
+    distance.kernel = merge(distance.kernel.g, binsetd, by.x = c("gi", "bid"), by.y = c("gid", "bid"), allow.cartesian=TRUE)
+    setnames(distance.kernel, "binid", "i")
+    distance.kernel = merge(distance.kernel, binsetd, by.x = c("gj", "bid"), by.y = c("gid", "bid"), allow.cartesian=TRUE)
+    setnames(distance.kernel, "binid", "j")
+    distance.kernel = unique(distance.kernel[, .(bid, i, j, val)][i<j])
+    distance.kernel = merge(distance.kernel, distance.kernel.intra, by = c("bid", "i", "j"), all.x = T)
+    distance.kernel[, val := ifelse(val.x <= 1, val.y, val.x)]  
+    distance.kernel[, val := round_any(val, resolution, f = ceiling)]
+    distance.kernel = distance.kernel[, .(bid, i , j, val)]  
+    setkeyv(distance.kernel, c('i', 'j'))
+  }
+
+  if (!is.null(interchromosomal.table)){
+      interchromosomal.table[, dist := round_any(dist, resolution)]
+      distance.kernel = merge(distance.kernel, gr2dt(binsets)[, .(seqnames, binid)], by.x = "i", by.y = "binid")
+      distance.kernel = merge(distance.kernel, gr2dt(binsets)[, .(seqnames, binid)], by.x = "j", by.y = "binid")
+      setnames(distance.kernel, c("seqnames.x", "seqnames.y"), c("V1", "V2"))
+      distance.kernel = merge(distance.kernel, interchromosomal.table, by = c("V1", "V2"), all.x = T)
+      distance.kernel[, val := ifelse(is.na(val), dist, val)]
+      distance.kernel = distance.kernel[, .(j,   i,  bid, val)]
+      distance.kernel[, val := ifelse(is.na(val), max(interchromosomal.table$dist), val)]
+      setkeyv(distance.kernel, c('i', 'j'))
+  } else {
+      distance.kernel[is.infinite(val), val := interchromosomal.dist]
+      distance.kernel[is.na(val), val := interchromosomal.dist]
+      #distance.kernel = distance.kernel[!is.infinite(val)]
+      #distance.kernel = distance.kernel[!is.na(val)] 
+  }
+
+  ## distance.kernel[is.na(val), val := interchromosomal.dist]
+  
+  ####
+  binsets = gr2dt(binsets)
+  setkeyv(binsets, c('seqnames','start', 'end'))
+
+  bins$binid = 1:length(bins)
+  bins.dt = gr2dt(bins)
+  
+  ####
+  
+  ends.kernel = bins.dt[, .(val = max(end)), by = .(seqnames, binid)] %>% setkey('seqnames')
+  ends.kernel[, freq := .N, by = seqnames]
+  if (any(ends.kernel[, freq] == 1)){
+      ends.kernel = rbind(ends.kernel[freq == 1], ends.kernel) %>% setkey('seqnames')
+  }
+
+####
+  ## distance.kernel = binsets[, .(val = start - (data.table::shift(end))), by = .(seqnames, bid)][!is.na(val), ] %>% setkey('seqnames')
+  ## distance.kernel[, val := ifelse(is.na(val), 0, val)] %>% setkey('seqnames')
+  ## distance.kernel[, freq := .N, by = .(seqnames, bid)]
+  ## distance.kernel =  rbind(distance.kernel[freq == 1], distance.kernel) %>% setkey('seqnames')
+  
+  ####
+  width.kernel = binsets[, .(seqnames, val = width)] ## %>% setkey('seqnames')
+  ## width.kernel[, freq := .N, by = seqnames]
+  ## width.kernel = rbind(width.kernel[freq == 1], width.kernel)%>% setkey('seqnames')
+  
+  ends.bw =  ends.kernel[, .(bw = density(val)$bw), keyby = seqnames]
+
+  ## distance.bw =  distance.kernel[, .(bw = density(val)$bw), keyby = seqnames]
+  ## width.bw =  width.kernel[, .(bw = density(val)$bw), keyby = seqnames]
+
+  distance.bw =  distance.kernel[, .(bw = density(val)$bw)]
+  width.bw =  width.kernel[, .(bw = density(val)$bw)]
+  
+  if (verbose) smessage('Making transition matrices')
+
+  ## populate cardinality 
+  cardinality.multinomial = binsets[, .(cardinality = .N), by = .(bid)][, .N, by = cardinality][, .(cardinality, prob = N/sum(N))] %>% setkey(cardinality)
+
+  ## populate chrom multi-nomial and chr-chr transition matrix
+  chrom.multinomial = binsets[, .(count = .N + pseudocount), by = seqnames][, .(seqnames, prob = count / sum(count))] %>% setkey('seqnames')
+
+  ## populate chrom multi-nomial and chr-chr transition matrix
+
+  chrom.transition = merge(binsets, binsets, by = 'bid', allow.cartesian = TRUE)[, .(count = .N + pseudocount), by = .(seqnames.x, seqnames.y)][, .(seqnames.y, prob = count / sum(count)), keyby = .(seqnames.x)] 
+  
+  ## chrom.transition = merge(binsets, binsets, by = 'bid', allow.cartesian = TRUE)[, .(count = .N + pseudocount), by = .(seqnames.x, seqnames.y)]
+  ## chrom.transition[, exclude := ifelse(seqnames.x %in% unique(distance.kernel$seqnames), FALSE, TRUE)]
+  ## chrom.transition[, count := ifelse(exclude & seqnames.x == seqnames.y, 0, count)]
+  ## chrom.transition = chrom.transition[, .(seqnames.y, prob = count / sum(count)), keyby = .(seqnames.x)]
+  ## chrom.transition[, prob := ifelse(is.nan(prob), 0, prob)]
+  ## chrom.transition[, sum.p := sum(prob), by = seqnames.x]
+  ## chrom.transition = chrom.transition[sum.p > 0]
+  
+  ##browser()
+  if (verbose) smessage('Generating random sets')
+  out = pbmclapply(1:n, mc.cores = mc.cores, function(i)
+  {
+    cardinality = cardinality.multinomial[, sample(cardinality, 1, prob = prob)]
+    binset = data.table(bid = i, seqnames = chrom.multinomial[, sample(seqnames, prob = prob, 1)])
+
+    chr.int=8
+    binset$end = start(gr.sample(hg_seqlengths(genome = genome.to.use)[chr.int], 1, wid = 1))
+    ##binset$end = rdens(1, ends.kernel[.(binset$seqnames), val], width = ends.bw[.(binset$seqnames), bw])
+
+    binset$start = binset$end - rdens_sliding(1, width.kernel[, val], den = width.bw)
+    ## binset$start = binset$end - rdens(1, width.kernel[, val], width = width.bw[, bw])
+    for (k in setdiff(1:cardinality, 1))
+    {
+      lastchrom = tail(binset$seqnames, 1)
+      laststart = tail(binset$start, 1)
+      newchrom = chrom.transition[.(lastchrom), sample(seqnames.y, 1, prob = prob)]
+      ##print(as.character(newchrom))
+      if (newchrom == lastchrom)
+      {
+        ## newbin = data.table(bid = i,
+        ##                     seqnames = newchrom,
+        ##                     end = laststart - rdens(1, distance.kernel[, val], resolution, width = distance.bw[, bw]))
+        ## newbin[, start := end - rdens(1, width.kernel[, val], width = width.bw[, bw])]
+        ##
+        newbin = data.table(bid = i,
+                           seqnames = newchrom,
+                           end = laststart - (rdens_sliding(1, distance.kernel[, val], den = distance.bw)))
+        newbin[, start := end - rdens_sliding(1, width.kernel[, val], den = width.bw)]
+        ##print(newbin)
+      }
+      else
+      {
+        newbin = data.table(bid = i,
+                            seqnames = newchrom,
+                            end = rdens_sliding(1, ends.kernel[.(newchrom), val], den = ends.bw[.(newchrom), ]))
+        newbin[, start := end - rdens_sliding(1, width.kernel[, val], den = width.bw)]
+        ##newbin[, start := end - rdens(1, width.kernel[, val], width = width.bw[, bw])]
+        ##print(newbin)
+      }
+      binset = rbind(binset, newbin, fill = TRUE)
+    }
+    binset
+  }) %>% rbindlist(fill = TRUE)
+
+  ## fix coordinates
+  out[, start := pmax(1, ceiling(start))]
+  out[, end := pmax(1, ceiling(end))]
+  out = gr2dt(dt2gr(out))
+  return(out)
+}
+
+
+
+#' @name sliding_window_background
+#' @description
+#'
+#' Given n binsets generates random "background" binsets that mirrors the input binset characteristics with respect to chromosome, width, and distance.
+#'
+#' @param chromosome the chromosome to work on, string.
+#' @param binsets GRanges of bins with fields seqnames, start, end, and $bid specifying bin-set id
+#' @param n number of binsets to generate [1000]
+#' @param resolution to use for the simulation [5e4]
+#' @param seed seed for subsampling
+#' @param genome.to.use genome build to use for the simulation [hg38]
+#' @return GRanges of simulated binsets
+#' @export
+
+help_bins_2 = function(chromosome, binsets, seed = 145, n = 1000, resolution = 5e4, num.cores = 10, genome.to.use = "BSgenome.Hsapiens.UCSC.hg38::Hsapiens", psuedocount=1){
+    set.seed(seed)
+    this.final.dt = data.table()
+    ##chr.int = .chr2str(chromosome)
+    upper.bound=99999999999
+    ##upper.bound = hg_seqlengths(genome = genome.to.use)[chr.int]
+#### get the relevant distributions
+    dist.pdf.dt = extract_dw(binsets, num.cores = num.cores)
+    dist.pdf.dt = dist.pdf.dt[!is.na(V1)]
+    this.num = 0
+    this.tot = 0
+    i = 0
+    message("Generating GRanges")    
+    binsets.dt = gr2dt(binsets)
+    pseudocount=1
+    chrom.multinomial = binsets.dt[, .(count = .N + pseudocount), by = seqnames][, .(seqnames, prob = count / sum(count))] %>% setkey('seqnames')
+    chrom.multinomial = chrom.multinomial[!(seqnames %in% c('chrX','chrY','chrM'))]
+  ## populate chrom multi-nomial and chr-chr transition matrix
+
+   chrom.transition = merge(binsets.dt, binsets.dt, by = 'bid', allow.cartesian = TRUE)[, .(count = .N + pseudocount), by = .(seqnames.x, seqnames.y)][, .(seqnames.y, prob = count / sum(count)), keyby = .(seqnames.x)] 
+   chrom.transition = chrom.transition[!(seqnames.x %in% c('chrX','chrY','chrM'))]
+   chrom.transition = chrom.transition[!(seqnames.y %in% c('chrX','chrY','chrM'))]   
+
+##    for (i in 1:n) {
+    this.list = pbmclapply(1:n, function(i){
+        this.iter = i
+        print(this.iter)
+        this.card = round(rdens_sliding(1, den = density(dist.pdf.dt[type == "cardinality"]$V1),
+                                dat = dist.pdf.dt[type == "cardinality"]$V1))
+
+        
+        if (this.card > 0){
+            this.dists = tryCatch(round_any(c(0, (rdens_sliding(this.card-1, den = density(dist.pdf.dt[type == "dist"]$V1), dat = dist.pdf.dt[type== "dist"]$V1))), resolution), error = function(e) NULL)
+            this.width = tryCatch(round_any(rdens_sliding(this.card, den = density(dist.pdf.dt[type == "width"]$V1), dat = dist.pdf.dt[type == "width"]$V1), resolution, ceiling),  error = function(e) NULL)
+            if (!is.null(this.dists) & !is.null(this.width)){
+                this.width = this.width-1
+                this.dists = this.dists+1
+####
+                this.loc.dt = data.table()
+                for (j in 1:this.card){
+                    if (j == 1){
+                        seqnames = chrom.multinomial[, sample(seqnames, prob = prob, 1)]
+                        chr.int = .chr2str(seqnames)
+                        anchor.pt = start(gr.sample(hg_seqlengths(genome = genome.to.use)[chr.int], 1, wid = 1))
+                        sts = anchor.pt + this.dists[j]
+                        this.gr = GRanges(seqnames = Rle(c(as.character(seqnames)), c(1)),
+                                          ranges = IRanges(c(sts)))
+                        this.gr = this.gr + (this.width[j]/2)
+                        this.dt = gr2dt(this.gr)
+                        this.loc.dt = rbind(this.loc.dt, this.dt)
+                    } else {    
+                        new.seqnames = chrom.transition[.(seqnames), sample(seqnames.y, 1, prob = prob)]
+                        if (as.character(new.seqnames) != as.character(seqnames)) {
+                             seqnames = new.seqnames
+                             chr.int = .chr2str(seqnames)
+                             anchor.pt = start(gr.sample(hg_seqlengths(genome = genome.to.use)[chr.int], 1, wid = 1))
+                             sts = anchor.pt + this.dists[j]
+                        } else {
+                             sts = tail(this.loc.dt, n = 1)$end + this.dists[j]
+                        }
+                        ends = sts + this.width[j]
+                        print(seqnames)
+                        this.gr = GRanges(seqnames = Rle(c(as.character(seqnames)), c(1)),
+                                          ranges = IRanges(sts, end = ends))
+                        this.dt = gr2dt(this.gr)
+                        this.loc.dt = rbind(this.loc.dt, this.dt)
+                    }
+                }
+                this.loc.dt[, bid := paste0("rand_", i)]
+                this.loc.gr = dt2gr(this.loc.dt)
+                chrs = this.loc.dt$seqnames %>% as.character
+                chr.strs = .chr2str(chrs)
+                upper.bounds = hg_seqlengths(genome=genome.to.use)[chr.strs]
+                print(chrs)
+                    
+                if (!any(start(this.loc.gr) > upper.bounds)){
+                    this.num = this.num + 1
+                    this.final.dt = rbind(this.final.dt, this.loc.dt)
+                } else {this.final.dt = data.table(NA)}
+            } else {this.final.dt = data.table(NA)}
+        } else {this.final.dt = data.table(NA)}
+        return(this.final.dt)
+    }, mc.cores = num.cores, mc.preschedule=TRUE)
+    ##browser()
+    this.dt = rbindlist(this.list, fill = TRUE)
+    return(this.dt)
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
